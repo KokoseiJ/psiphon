@@ -14,14 +14,28 @@ Each piece of the string has data separated with space, so you can separate it w
   * Something that is encoded to hex. I have no idea as it can't be just converted to UTF-8 or ASCII
   * Something that is encoded to base64. I also have no idea about it as it can't be just converted to UTF-8 or ASCII
   * another dictionary. it has those keys:
-    * capabilities - List of the protocols that server supports
+    * capabilities - List of the protocols that server supports. it contains:  
+      ` `UNFRONTED-MEEK-SESSION-TICKET  
+      ` `SSH  
+      ` `QUIC  
+      ` `OSSH  
+      ` `ssh-api-requests  
+      ` `UNFRONTED-MEEK-HTTPS  
+      ` `FRONTED-MEEK-HTTP  
+      ` `FRONTED-MEEK  
+      ` `FRONTED-MEEK-QUIC  
+      ` `FRONTED-MEEK-TACTICS  
+      ` `UNFRONTED-MEEK  
+      ` `TAPDANCE  
+      ` `handshake  
+      ` `VPN
     * configurationVersion
     * ipAddress - same as the one above
     * meekCookieEncryptionPublicKey
     * meekFrontingDomain
     * meekFrontingHost
     * meekObfuscatedKey
-    * meekServerPort
+    * meekServerPorta
     * region - contains the region of the server in 2 characters
     * signature
     * sshHostKey
