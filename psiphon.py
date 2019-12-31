@@ -22,6 +22,10 @@ import os
 import requests
 import wget
 import pexpect
+import sys
+import socks
+import base64
+import hashlib
 
 class psi_server:
     def __init__(self, hexdata):
@@ -62,30 +66,56 @@ class psi_server:
 
         # session is just 16 byte random string, encoded with hex.
         self.sessionid = bytearray(os.urandom(16)).hex()
-#not yet.
-"""
-    def handshake(relay = "SSH", cli_ver = "1", cli_platform = "Python", servers = []):
+
+        self.handshake_done = False
+    def handshake(self, relay = "SSH", cli_ver = "1", cli_platform = "Python", servers = []):
         # server_secret, propagation_channel_id, sponsor_id, client_version, client_platform, relay_protocol
         # MAN THIS ADDRESS IS FUCKING HUGE
         address = '''\
         https://{}:{}/handshake?server_secret={}&propagation_channel_id={}&sponsor_id={}&client_version={}&client_platform={}&relay_protocol={}&client_session_id={}'''\
-        .format(self.ipaddr, self.webport, self.websecret, self.propchanid, self.sponsorid, cli_ver, cli_platform, relay, self.session)\
+        .format(self.ipaddr, self.webport, self.websecret, self.propchanid, self.sponsorid, cli_ver, cli_platform, relay, self.sessionid)\
         + "known_server=" + "&known_server=".join(servers)
         print("Attempting Handshake to {}:{}, Relay Protocol:{}".format(self.ipaddr, self.webport, relay))
         try:
-            self.handshake_result = requests.get(address)
+            self.handshake_result = requests.get(address, verify = False, proxies={"http": "socks5://127.0.0.1:1080", "https": "socks5://127.0.0.1:1080"})
             if self.handshake_result.status_code != 200:
                 print("Error: Handshake Failed, Status Code: " + str(self.handshake_result.status_code))
+                self.handshake_done = False
             else:
                 print("Handshake Successful")
+                self.handshake_done = True
         except Exception as e:
             print("Error: Handshake Failed.")
             print(type(e).__name__ + ": " + str(e))
-        return
-    def SSHconnect(socksport = 1080):
-        cmd = "ssh -C -D 127.0.0.1:{} -N -p {} {}:{}".format(
+            self.handshake_done = False
+
+    def SSHconnect(self, socksport = 1080):
+        cmd = "ssh -C -D 127.0.0.1:{} -N -p {} {}@{}".format(
             socksport, self.sshport, self.sshuser, self.ipaddr)
-"""
+        pwd = self.sessionid + self.sshpwd
+
+        # calculate SHA256 base64-encoded fingerprint from SSH host key
+        # https://stackoverflow.com/questions/56769749/calculate-ssh-public-key-fingerprint-into-base64-why-do-i-have-an-extra
+        fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(self.sshkey)).digest()).decode()[:-1]
+        fingerprint = "fingerprint"
+
+        print(fingerprint)
+
+        self.ssh = pexpect.spawn(cmd)
+        self.ssh.logfile = sys.stdout.buffer
+        expectrtn = self.ssh.expect(["[pP]assword", fingerprint])
+        print(expectrtn)
+        if expectrtn:
+            self.ssh.sendline("yes")
+            self.ssh.expect("[pP]assword")
+            self.ssh.sendline(pwd)
+            print("password sent")
+        else:
+            self.ssh.sendline(pwd)
+            print("password sent")
+
+        print("Connection Established.")
+        print("Server Region:", self.region)
 
 def update_server_list(url = "https://psiphon3.com/server_list"):
     os.rename("server_list", ".server_list")
@@ -93,6 +123,8 @@ def update_server_list(url = "https://psiphon3.com/server_list"):
         wget.download(url)
         os.remove(".server_list")
     except Exception as e:
+        print("Error: Failed to download " + url + ".")
+        print(type(e).__name__ + ": " + str(e))
         os.rename(".server_list", "server_list")
 
 def load_server_list():
@@ -102,5 +134,22 @@ def load_server_list():
 
 update_server_list()
 test = load_server_list()
-for x in test:
+for x in range(len(test)):
+    print(str(x) + " ", end = "")
+    x = test[x]
     print(x.ipaddr, x.webport, x.region)
+
+x = int(input())
+
+print("ssh -C -D 127.0.0.1:1080 -N -p {} {}@{}\nPassword: {}{}".format(
+    test[x].sshport, test[x].sshuser, test[x].ipaddr, test[x].sessionid, test[x].sshpwd))
+
+test[x].SSHconnect()
+try:
+    test[x].handshake(servers = list(map(lambda x:  x.ipaddr, test)))
+except Exception as e:
+    print(type(e).__name__ + ": " + str(e))
+
+print(test[x].ssh)
+
+input()
