@@ -26,14 +26,20 @@ import sys
 import socks
 import base64
 import hashlib
+import time
 
 class psi_server:
     def __init__(self, hexdata):
         # parse datas from hex-encoded string.
         data = json.loads(bytearray.fromhex(hexdata).split()[-1])
         
+        # List of the protocol that server supports.
+        self.capabilities = data['capabilities']
+
+        # This contains the region of the server.
         self.region = data['region']
 
+        # quite obvious tho. it's just IP address
         self.ipaddr = data['ipAddress']
 
         # These will be used when connecting to SSH server.
@@ -68,88 +74,116 @@ class psi_server:
         self.sessionid = bytearray(os.urandom(16)).hex()
 
         self.handshake_done = False
+        
     def handshake(self, relay = "SSH", cli_ver = "1", cli_platform = "Python", servers = []):
-        # server_secret, propagation_channel_id, sponsor_id, client_version, client_platform, relay_protocol
         # MAN THIS ADDRESS IS FUCKING HUGE
-        address = '''\
-        https://{}:{}/handshake?server_secret={}&propagation_channel_id={}&sponsor_id={}&client_version={}&client_platform={}&relay_protocol={}&client_session_id={}'''\
+        # format the address in the right way, and add bunch of
+        # known_server parameters.
+        address = "https://{}:{}/handshake?server_secret={}&propagation_channel_id={}&sponsor_id={}&client_version={}&client_platform={}&relay_protocol={}&client_session_id={}"\
         .format(self.ipaddr, self.webport, self.websecret, self.propchanid, self.sponsorid, cli_ver, cli_platform, relay, self.sessionid)\
-        + "known_server=" + "&known_server=".join(servers)
+        + "&known_server=" + "&known_server=".join(servers)
         print("Attempting Handshake to {}:{}, Relay Protocol:{}".format(self.ipaddr, self.webport, relay))
+        # Let's connect to the web server!
         try:
+            # We have to send a request through the SOCKS proxy.
+            # also, You should set verify argument to False as all of
+            # those web servers are self signed.
+            # I should find another method to verify the server's
+            # certificate tho
             self.handshake_result = requests.get(address, verify = False, proxies={"http": "socks5://127.0.0.1:1080", "https": "socks5://127.0.0.1:1080"})
-            if self.handshake_result.status_code != 200:
-                print("Error: Handshake Failed, Status Code: " + str(self.handshake_result.status_code))
-                self.handshake_done = False
-            else:
+            if self.handshake_result.status_code == 200:
                 print("Handshake Successful")
                 self.handshake_done = True
+            else:
+                print("Error: Handshake Failed, Status Code: " + str(self.handshake_result.status_code))
+                self.handshake_done = False
         except Exception as e:
             print("Error: Handshake Failed.")
             print(type(e).__name__ + ": " + str(e))
             self.handshake_done = False
+        return
 
     def SSHconnect(self, socksport = 1080):
+        # Generate a ssh command that opens a SOCKS proxy Through SSH.
         cmd = "ssh -C -D 127.0.0.1:{} -N -p {} {}@{}".format(
             socksport, self.sshport, self.sshuser, self.ipaddr)
+        # Basically password is session id + password
         pwd = self.sessionid + self.sshpwd
 
         # calculate SHA256 base64-encoded fingerprint from SSH host key
         # https://stackoverflow.com/questions/56769749/calculate-ssh-public-key-fingerprint-into-base64-why-do-i-have-an-extra
         fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(self.sshkey)).digest()).decode()[:-1]
+        # It doesn't work for some reason, I have to find another way
+        # to verify it.
         fingerprint = "fingerprint"
 
-        print(fingerprint)
-
+        # Spawn a process with the command.
+        print("Connecting to", self.ipaddr)
         self.ssh = pexpect.spawn(cmd)
-        self.ssh.logfile = sys.stdout.buffer
+        # Prints log
+        # self.ssh.logfile = sys.stdout.buffer
+
+        # Check if we need to check fingerprint or input Password
         expectrtn = self.ssh.expect(["[pP]assword", fingerprint])
-        print(expectrtn)
         if expectrtn:
             self.ssh.sendline("yes")
             self.ssh.expect("[pP]assword")
             self.ssh.sendline(pwd)
-            print("password sent")
+            print("Password Sent.")
         else:
             self.ssh.sendline(pwd)
-            print("password sent")
-
-        print("Connection Established.")
-        print("Server Region:", self.region)
+            print("Password Sent.")
+        # Check if the SOCKS server are opened.
+        for x in range(10):
+            try:
+                socket.socket().connect(("127.0.0.1", socksport))
+                # If it's able to connect to the SOCKS server,
+                # it will return and escape the function
+                print("Connection Established, SOCKS server opened.")
+                print("Server Region:", self.region)
+                return
+            except:
+                print("Error: SOCKS server not opened yet")
+                time.sleep(1)
+        # If it wasn't able to connect to the SOCKS server,
+        # It will raise Exception
+        raise
 
 def update_server_list(url = "https://psiphon3.com/server_list"):
+    # Back up the previous server_list file
     os.rename("server_list", ".server_list")
     try:
+        # Download the file
         wget.download(url)
+        # if it was successful, delete backed up file
         os.remove(".server_list")
     except Exception as e:
         print("Error: Failed to download " + url + ".")
         print(type(e).__name__ + ": " + str(e))
+        # Restore the backed up file
         os.rename(".server_list", "server_list")
 
+# All the codes below are for testing and will be replaced
 def load_server_list():
     file = open("server_list").read()
     svlist = json.loads(file)['data'].split("\n")
     return list(map(lambda x:  psi_server(x), svlist))
 
-update_server_list()
-test = load_server_list()
-for x in range(len(test)):
-    print(str(x) + " ", end = "")
-    x = test[x]
-    print(x.ipaddr, x.webport, x.region)
+if __name__ == "__main__":
+    update_server_list()
+    test = load_server_list()
+    for x in range(len(test)):
+        print(str(x), end = " ")
+        x = test[x]
+        print(x.ipaddr, x.webport, x.region)
 
-x = int(input())
-
-print("ssh -C -D 127.0.0.1:1080 -N -p {} {}@{}\nPassword: {}{}".format(
-    test[x].sshport, test[x].sshuser, test[x].ipaddr, test[x].sessionid, test[x].sshpwd))
-
-test[x].SSHconnect()
-try:
-    test[x].handshake(servers = list(map(lambda x:  x.ipaddr, test)))
-except Exception as e:
-    print(type(e).__name__ + ": " + str(e))
-
-print(test[x].ssh)
-
-input()
+    x = test[int(input())]
+    x.SSHconnect() 
+    try:
+        x.handshake(servers = list(map(lambda x:  x.ipaddr, test)))
+    except Exception as e:
+        print(type(e).__name__ + ": " + str(e))
+    input()
+else:
+    update_server_list
+    svlist = load_server_list()
