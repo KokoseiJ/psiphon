@@ -23,15 +23,17 @@ import requests
 import wget
 import pexpect
 import sys
-import socks
+import socket
 import base64
 import hashlib
 import time
 
+requests.packages.urllib3.disable_warnings() 
+
 class psi_server:
-    def __init__(self, hexdata):
+    def __init__(self, rawdata):
         # parse datas from hex-encoded string.
-        data = json.loads(bytearray.fromhex(hexdata).split()[-1])
+        data = json.loads(rawdata)
         
         # List of the protocol that server supports.
         self.capabilities = data['capabilities']
@@ -74,6 +76,8 @@ class psi_server:
         self.sessionid = bytearray(os.urandom(16)).hex()
 
         self.handshake_done = False
+
+        self.rawdata = rawdata
         
     def handshake(self, relay = "SSH", cli_ver = "1", cli_platform = "Python", servers = []):
         # MAN THIS ADDRESS IS FUCKING HUGE
@@ -81,7 +85,7 @@ class psi_server:
         # known_server parameters.
         address = "https://{}:{}/handshake?server_secret={}&propagation_channel_id={}&sponsor_id={}&client_version={}&client_platform={}&relay_protocol={}&client_session_id={}"\
         .format(self.ipaddr, self.webport, self.websecret, self.propchanid, self.sponsorid, cli_ver, cli_platform, relay, self.sessionid)\
-        + "&known_server=" + "&known_server=".join(servers)
+        + "&known_server=" + self.ipaddr#"&known_server=".join(servers)
         print("Attempting Handshake to {}:{}, Relay Protocol:{}".format(self.ipaddr, self.webport, relay))
         # Let's connect to the web server!
         try:
@@ -94,14 +98,15 @@ class psi_server:
             if self.handshake_result.status_code == 200:
                 print("Handshake Successful")
                 self.handshake_done = True
+                return 0
             else:
                 print("Error: Handshake Failed, Status Code: " + str(self.handshake_result.status_code))
                 self.handshake_done = False
+                return 1
         except Exception as e:
             print("Error: Handshake Failed.")
-            print(type(e).__name__ + ": " + str(e))
             self.handshake_done = False
-        return
+            return 1
 
     def SSHconnect(self, socksport = 1080):
         # Generate a ssh command that opens a SOCKS proxy Through SSH.
@@ -118,41 +123,101 @@ class psi_server:
         fingerprint = "fingerprint"
 
         # Spawn a process with the command.
-        print("Connecting to", self.ipaddr)
-        self.ssh = pexpect.spawn(cmd)
-        # Prints log
-        # self.ssh.logfile = sys.stdout.buffer
-
-        # Check if we need to check fingerprint or input Password
-        expectrtn = self.ssh.expect(["[pP]assword", fingerprint])
-        if expectrtn:
-            self.ssh.sendline("yes")
-            self.ssh.expect("[pP]assword")
-            self.ssh.sendline(pwd)
-            print("Password Sent.")
-        else:
-            self.ssh.sendline(pwd)
-            print("Password Sent.")
+        print("Connecting to " + self.ipaddr + "...")
+        try:
+            self.ssh = pexpect.spawn(cmd)
+            # Prints log
+            # self.ssh.logfile = sys.stdout.buffer
+    
+            # Check if we need to check fingerprint or input Password
+            expectrtn = self.ssh.expect(["[pP]assword", fingerprint])
+            if expectrtn:
+                self.ssh.sendline("yes")
+                self.ssh.expect("[pP]assword")
+                self.ssh.sendline(pwd)
+            else:
+                self.ssh.sendline(pwd)
+        except Exception as e:
+            print("Error: Failed to connect to the SSH server.")
+            print(type(e).__name__ + ": " + str(e))
+            return 1
         # Check if the SOCKS server are opened.
-        for x in range(10):
+        print("Checking Connection...")
+        for x in range(3):
             try:
                 socket.socket().connect(("127.0.0.1", socksport))
                 # If it's able to connect to the SOCKS server,
                 # it will return and escape the function
-                print("Connection Established, SOCKS server opened.")
+                print("Connection Established.\nSOCKS5 opened at 127.0.0.1:" + str(socksport))
                 print("Server Region:", self.region)
-                return
-            except:
-                print("Error: SOCKS server not opened yet")
+                return 0
+            except Exception as e:
                 time.sleep(1)
         # If it wasn't able to connect to the SOCKS server,
         # It will raise Exception
-        raise
+        print("Error: SOCKS5 server time out")
+        self.ssh.terminate(force=True)
+        return 1
+
+    def wait_disconnect(self, interact = True):
+        print("Press CTRL + C to terminate.")
+        try:
+            if interact:
+                input()
+                return 1
+            else:
+                self.ssh.wait()
+                print("Error: SSH disconnected unexpectedly.")
+        except KeyboardInterrupt:
+            print("Terminating SSH session...")
+            self.ssh.terminate(force=True)
+        return 0
+
+class server_list:
+    @classmethod
+    def load(cls):
+        try:
+            file = open("servers.dat").read()
+            svlist = file.split("\n")
+            cls.list = list(map(lambda x:  psi_server(x), svlist))
+            cls.cursv = None
+        except Exception as e:
+            print("Error: Failed to load the servers.dat file.")
+            print(type(e).__name__ + ": " + str(e))
+            exit(1)
+        return
+
+    @classmethod
+    def get(cls, region = False, relay = "SSH"):
+        for numb, sv in zip(range(len(cls.list)), cls.list):
+            if relay in sv.capabilities and ((not region) or sv.region == region):
+                cls.cursv = numb
+                return sv
+        print("Error: Can't find " + region + " server that supports " + relay)
+        exit(1)
+
+    @classmethod
+    def get_ip_list(cls):
+        return tuple(map(lambda x:  x.ipaddr, cls.list))
+
+    @classmethod
+    def pop_server(cls):
+        cls.list.append(cls.list.pop(cls.cursv))
+        generate_servers_dat(data = list(map(lambda x:  x.rawdata, cls.list)))
+        return
+
+    @classmethod
+    def get_region_list(cls):
+        rtnlist = []
+        for x in cls.list:
+            if not x.region in rtnlist:
+                rtnlist.append(x.region)
+        return rtnlist
 
 def update_server_list(url = "https://psiphon3.com/server_list"):
-    # Back up the previous server_list file
-    os.rename("server_list", ".server_list")
     try:
+        # Back up the previous server_list file
+        os.rename("server_list", ".server_list")
         # Download the file
         wget.download(url)
         # if it was successful, delete backed up file
@@ -163,11 +228,59 @@ def update_server_list(url = "https://psiphon3.com/server_list"):
         # Restore the backed up file
         os.rename(".server_list", "server_list")
 
-# All the codes below are for testing and will be replaced
+def generate_servers_dat(data = None):
+    try:
+        os.rename("servers.dat", ".servers.dat")
+        if data:
+            rtnlist = data
+        else:
+            svlist = open("server_list").read()
+            rtnlist = map(lambda x:  bytearray.fromhex(x).decode().split()[-1], json.loads(svlist)['data'].split("\n"))
+        open("servers.dat", "w").write("\n".join(rtnlist))
+        print("Succesfully generated servers.dat file.")
+        return
+    except Exception as e:
+        print("Error: Failed to generate servers.dat.")
+        print(type(e).__name__ + ": " + str(e))
+        os.rename(".servers.dat", "servers.dat")
+        return
+
+if __name__ == "__main__":
+    if input("Update server_list file?(y/n): ") == "y":
+        update_server_list()
+        generate_servers_dat()
+
+    server_list.load()
+
+    print("List of the region is:")
+    rglist = requests.get("http://country.io/names.json").json()
+    for x in server_list.get_region_list():
+        print(x, ":", rglist[x])
+
+    region = input("Enter your region code or leave it blank to set it to ANY: ")
+    if not region:
+        region = False
+
+    while True:
+        server = server_list.get(region = region)
+        if server.SSHconnect():
+            server_list.pop_server()
+            continue
+        elif server.handshake(servers = server_list.get_ip_list()):
+            server_list.pop_server()
+            continue
+        elif server.wait_disconnect():
+            server_list.pop_server()
+            continue
+        exit(1)
+
+
+# All the codes below were for testing
+"""
 def load_server_list():
     file = open("server_list").read()
     svlist = json.loads(file)['data'].split("\n")
-    return list(map(lambda x:  psi_server(x), svlist))
+    return list(map(lambda x:  psi_server(bytearray.fromhex(x).decode().split()[-1]), svlist))
 
 if __name__ == "__main__":
     update_server_list()
@@ -187,3 +300,4 @@ if __name__ == "__main__":
 else:
     update_server_list
     svlist = load_server_list()
+"""
